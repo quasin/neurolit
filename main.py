@@ -175,7 +175,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
 
         # Initial Tab
-        self.add_new_tab(QUrl("http://www.google.com"), "Homepage")
+        self.add_new_tab(QUrl("https://www.google.com/search?q=&udm=50&hl=ru"), "Homepage")
 
         # Setup Scheduled Fetching
         self.fetch_timer = QTimer(self)
@@ -193,7 +193,7 @@ class MainWindow(QMainWindow):
 
     def add_new_tab(self, qurl=None, label="New Tab"):
         if qurl is None:
-            qurl = QUrl("http://www.google.com")
+            qurl = QUrl("https://www.google.com/search?q=&udm=50&hl=ru")
 
         tab = BrowserTab(self, self.profile)
         tab.browser.setUrl(qurl)
@@ -323,7 +323,7 @@ class MainWindow(QMainWindow):
                 self.add_new_tab(QUrl(feed_url), "Feed URL")
 
     def navigate_home(self):
-        self.current_browser().setUrl(QUrl("http://www.google.com"))
+        self.current_browser().setUrl(QUrl("https://www.google.com/search?q=&udm=50&hl=ru"))
 
     def navigate_to_url(self):
         url_text = self.url_bar.text().strip()
