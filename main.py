@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QStatusBar, QDockWidget, QListWidget, QHBoxLayout,
     QLabel, QFrame
 )
+from PySide6.QtGui import QIcon
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
 from PySide6.QtNetwork import QNetworkProxy
@@ -34,6 +35,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NeuroLit - Neuronet Literature")
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
+        self.setWindowIcon(QIcon(icon_path))
         self.resize(1200, 800)
         self.feed_page = 0
 
@@ -507,6 +510,8 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setApplicationName("NeuroLit - Neuronet Literature")
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
+    app.setWindowIcon(QIcon(icon_path))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
