@@ -10,16 +10,20 @@ from PySide6.QtWidgets import (
     QLabel, QFrame
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEnginePage
 from PySide6.QtNetwork import QNetworkProxy
 from csv_viewer import CSVViewerTab
 
 class BrowserTab(QWidget):
-    def __init__(self, main_window):
+    def __init__(self, main_window, profile=None):
         super().__init__()
         self.main_window = main_window
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.browser = QWebEngineView()
+        if profile is not None:
+            page = QWebEnginePage(profile, self.browser)
+            self.browser.setPage(page)
         self.browser.createWindow = self.create_window
         self.layout.addWidget(self.browser)
 
@@ -32,6 +36,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("NeuroLit - Neuronet Literature")
         self.resize(1200, 800)
         self.feed_page = 0
+
+        # Persistent profile for cookie/session storage
+        storage_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "profile")
+        self.profile = QWebEngineProfile("neurolit", self)
+        self.profile.setPersistentStoragePath(storage_path)
+        self.profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
 
         # Tab Widget
         self.tabs = QTabWidget()
@@ -185,7 +195,7 @@ class MainWindow(QMainWindow):
         if qurl is None:
             qurl = QUrl("http://www.google.com")
 
-        tab = BrowserTab(self)
+        tab = BrowserTab(self, self.profile)
         tab.browser.setUrl(qurl)
         
         i = self.tabs.addTab(tab, label)
