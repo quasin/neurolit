@@ -127,6 +127,22 @@ class MainWindow(QMainWindow):
         self.feeds_container.hide()
         sidebar_layout.addWidget(self.feeds_container)
 
+        # Bookmarks Section (Hidden by default)
+        self.bookmarks_container = QWidget()
+        self.bookmarks_layout = QVBoxLayout(self.bookmarks_container)
+        self.bookmarks_list = QListWidget()
+        self.bookmarks_list.itemClicked.connect(self.bookmark_item_clicked)
+        self.bookmarks_layout.addWidget(self.bookmarks_list)
+
+        bookmarks_btn_layout = QHBoxLayout()
+        add_bookmark_btn = QPushButton("+ Add Current Page")
+        add_bookmark_btn.clicked.connect(self.add_current_page_bookmark)
+        bookmarks_btn_layout.addWidget(add_bookmark_btn)
+        self.bookmarks_layout.addLayout(bookmarks_btn_layout)
+
+        self.bookmarks_container.hide()
+        sidebar_layout.addWidget(self.bookmarks_container)
+
         # RSS Reader Section
         rss_label = QLabel("<b>RSS Reader</b>")
         sidebar_layout.addWidget(rss_label)
@@ -251,8 +267,10 @@ class MainWindow(QMainWindow):
     def update_title(self, browser):
         if browser != self.tabs.currentWidget():
             return
-        title = self.current_browser().page().title()
-        self.setWindowTitle(f"{title} - NeuroLit")
+        current = self.current_browser()
+        if current:
+            title = current.page().title()
+            self.setWindowTitle(f"{title} - NeuroLit")
 
     def current_browser(self):
         widget = self.tabs.currentWidget()
@@ -263,9 +281,14 @@ class MainWindow(QMainWindow):
     def sidebar_item_clicked(self, item):
         if item.text() == "Feeds":
             self.feed_page = 0
+            self.bookmarks_container.hide()
             self.show_feeds()
+        elif item.text() == "Bookmarks":
+            self.feeds_container.hide()
+            self.show_bookmarks()
         else:
             self.feeds_container.hide()
+            self.bookmarks_container.hide()
 
     def show_feeds(self):
         self.feeds_list.clear()
@@ -323,7 +346,11 @@ class MainWindow(QMainWindow):
                 self.add_new_tab(QUrl(feed_url), "Feed URL")
 
     def navigate_home(self):
-        self.current_browser().setUrl(QUrl("https://www.google.com/search?q=&udm=50&hl=ru"))
+        browser = self.current_browser()
+        if browser:
+            browser.setUrl(QUrl("https://www.google.com/search?q=&udm=50&hl=ru"))
+        else:
+            self.add_new_tab(QUrl("https://www.google.com/search?q=&udm=50&hl=ru"), "Homepage")
 
     def navigate_to_url(self):
         url_text = self.url_bar.text().strip()
@@ -331,7 +358,11 @@ class MainWindow(QMainWindow):
             url_text = "http://" + url_text
         
         q = QUrl(url_text)
-        self.current_browser().setUrl(q)
+        browser = self.current_browser()
+        if browser:
+            browser.setUrl(q)
+        else:
+            self.add_new_tab(q, "New Tab")
 
     def set_proxy(self):
         proxy_url = self.proxy_input.text().strip()
@@ -410,6 +441,68 @@ class MainWindow(QMainWindow):
             writer = csv.DictWriter(f, fieldnames=header, delimiter='\t')
             writer.writeheader()
             writer.writerows(rows)
+
+    def load_bookmarks(self):
+        """Load bookmarks from CSV file, creating default bookmarks if file doesn't exist."""
+        file_path = "data/bookmarks.csv"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+        if not os.path.isfile(file_path):
+            # Create default bookmarks file with the initial bookmark
+            with open(file_path, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=["title", "url"], delimiter='\t')
+                writer.writeheader()
+                writer.writerow({"title": "BlancVPN - My IP", "url": "https://blancvpn.cx/ru/my-ip"})
+
+        bookmarks = []
+        with open(file_path, mode='r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f, delimiter='\t')
+            for row in reader:
+                bookmarks.append(row)
+        return bookmarks
+
+    def save_bookmarks(self, bookmarks):
+        """Save bookmarks list to CSV file."""
+        file_path = "data/bookmarks.csv"
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=["title", "url"], delimiter='\t')
+            writer.writeheader()
+            writer.writerows(bookmarks)
+
+    def show_bookmarks(self):
+        """Display bookmarks in the sidebar."""
+        self.bookmarks_list.clear()
+        bookmarks = self.load_bookmarks()
+        for bm in bookmarks:
+            self.bookmarks_list.addItem(f"{bm['title']} — {bm['url']}")
+        self.bookmarks_container.show()
+
+    def bookmark_item_clicked(self, item):
+        """Open a bookmark URL in a new tab when clicked."""
+        text = item.text()
+        # Extract URL from "title — url" format
+        if " — " in text:
+            url = text.split(" — ", 1)[1]
+        else:
+            url = text
+        self.add_new_tab(QUrl(url), text.split(" — ")[0] if " — " in text else "Bookmark")
+
+    def add_current_page_bookmark(self):
+        """Add the current page to bookmarks."""
+        browser = self.current_browser()
+        if not browser:
+            return
+        url = browser.url().toString()
+        title = browser.page().title() or url
+        bookmarks = self.load_bookmarks()
+        # Don't add duplicate URLs
+        for bm in bookmarks:
+            if bm['url'] == url:
+                return
+        bookmarks.append({"title": title, "url": url})
+        self.save_bookmarks(bookmarks)
+        self.show_bookmarks()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
