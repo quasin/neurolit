@@ -41,8 +41,10 @@ class CSVViewerTab(QWidget):
                 padding: 4px;
                 border: 1px solid #d3d3d3;
                 font-weight: bold;
+                color: #008000;
             }
         """)
+        self.table.verticalHeader().setVisible(True)
         self.layout.addWidget(self.table)
         
         # Context menu for links
@@ -90,7 +92,7 @@ class CSVViewerTab(QWidget):
                     clean_data = cell_data.strip('"')
                     item = QTableWidgetItem(clean_data)
                     
-                    # If it looks like a link, maybe make it blue?
+                    # If it looks like a link, make it blue
                     if clean_data.startswith("http"):
                         item.setForeground(Qt.blue)
                     
