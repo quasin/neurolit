@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
         tab.browser.urlChanged.connect(lambda qurl, tab=tab: self.update_urlbar(qurl, tab))
         tab.browser.loadFinished.connect(lambda _, i=i, tab=tab: self.update_tab_title(i, tab))
         
-        return tab.browser.window()
+        return tab.browser
 
     def add_csv_tab(self, file_path, label="CSV Viewer"):
         if CSVViewerTab:
