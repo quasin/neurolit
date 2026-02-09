@@ -2,6 +2,7 @@ import sys
 import os
 import csv
 import subprocess
+import shutil
 import ctypes  # Для исправления иконки в панели задач
 
 from PySide6.QtCore import QUrl, Qt, QTimer, QDateTime
@@ -9,7 +10,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QToolBar, QLineEdit,
     QPushButton, QTabWidget, QVBoxLayout, QWidget,
     QStatusBar, QDockWidget, QListWidget, QHBoxLayout,
-    QLabel, QFrame, QSystemTrayIcon, QMenu  # Добавлены классы трея
+    QLabel, QFrame, QSystemTrayIcon, QMenu,  # Добавлены классы трея
+    QTextEdit,  # Для History
+    QTreeWidget, QTreeWidgetItem,  # For collapsible sidebar folders
+    QInputDialog, QMessageBox  # For subfolder dialogs
 )
 
 from PySide6.QtGui import QIcon, QAction  # Добавлен QAction
@@ -129,12 +133,43 @@ class MainWindow(QMainWindow):
         sidebar_container = QWidget()
         sidebar_layout = QVBoxLayout(sidebar_container)
         sidebar_layout.setAlignment(Qt.AlignTop)
-        
-        self.sidebar_list = QListWidget()
-        self.sidebar_list.addItems(["Feeds", "History", "Bookmarks", "Settings"])
-        self.sidebar_list.itemClicked.connect(self.sidebar_item_clicked)
-        sidebar_layout.addWidget(self.sidebar_list)
-        
+
+        # Ensure data directory exists
+        self.data_dir = os.path.join(base_dir, "data")
+        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.data_dir, "history"), exist_ok=True)
+
+        # Tree Widget for collapsible sidebar sections
+        self.sidebar_tree = QTreeWidget()
+        self.sidebar_tree.setHeaderHidden(True)
+        self.sidebar_tree.setAnimated(True)
+        self.sidebar_tree.setIndentation(16)
+        self.sidebar_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sidebar_tree.customContextMenuRequested.connect(self.sidebar_context_menu)
+
+        # Feeds top-level item
+        self.feeds_tree_item = QTreeWidgetItem(self.sidebar_tree, ["Feeds"])
+        self.feeds_tree_item.setFlags(self.feeds_tree_item.flags() | Qt.ItemIsEnabled)
+
+        # Bookmarks folder (collapsible)
+        self.bookmarks_tree_item = QTreeWidgetItem(self.sidebar_tree, ["Bookmarks"])
+        self.bookmarks_tree_item.setFlags(self.bookmarks_tree_item.flags() | Qt.ItemIsEnabled)
+        self.populate_bookmarks_tree()
+
+        # History folder (collapsible)
+        self.history_tree_item = QTreeWidgetItem(self.sidebar_tree, ["History"])
+        self.history_tree_item.setFlags(self.history_tree_item.flags() | Qt.ItemIsEnabled)
+        self.history_page = 0
+        self.populate_history_tree()
+
+        # Settings top-level item
+        self.settings_tree_item = QTreeWidgetItem(self.sidebar_tree, ["Settings"])
+        self.settings_tree_item.setFlags(self.settings_tree_item.flags() | Qt.ItemIsEnabled)
+
+        self.sidebar_tree.itemClicked.connect(self.sidebar_tree_item_clicked)
+        self.sidebar_tree.itemExpanded.connect(self.sidebar_tree_item_expanded)
+        sidebar_layout.addWidget(self.sidebar_tree)
+
         # Feeds List Section (Hidden by default)
         self.feeds_container = QWidget()
         self.feeds_layout = QVBoxLayout(self.feeds_container)
@@ -154,21 +189,39 @@ class MainWindow(QMainWindow):
         self.feeds_container.hide()
         sidebar_layout.addWidget(self.feeds_container)
 
-        # Bookmarks Section (Hidden by default)
-        self.bookmarks_container = QWidget()
-        self.bookmarks_layout = QVBoxLayout(self.bookmarks_container)
-        self.bookmarks_list = QListWidget()
-        self.bookmarks_list.itemClicked.connect(self.bookmark_item_clicked)
-        self.bookmarks_layout.addWidget(self.bookmarks_list)
-        
-        bookmarks_btn_layout = QHBoxLayout()
+        # Bookmarks buttons section (Hidden by default)
+        self.bookmarks_btn_container = QWidget()
+        bookmarks_btn_layout = QHBoxLayout(self.bookmarks_btn_container)
+        bookmarks_btn_layout.setContentsMargins(0, 0, 0, 0)
         add_bookmark_btn = QPushButton("+ Add Current Page")
         add_bookmark_btn.clicked.connect(self.add_current_page_bookmark)
         bookmarks_btn_layout.addWidget(add_bookmark_btn)
-        
-        self.bookmarks_layout.addLayout(bookmarks_btn_layout)
-        self.bookmarks_container.hide()
-        sidebar_layout.addWidget(self.bookmarks_container)
+        remove_bookmark_btn = QPushButton("- Remove")
+        remove_bookmark_btn.clicked.connect(self.remove_selected_bookmark)
+        bookmarks_btn_layout.addWidget(remove_bookmark_btn)
+        self.bookmarks_btn_container.hide()
+        sidebar_layout.addWidget(self.bookmarks_btn_container)
+
+        # History editor section (Hidden by default)
+        self.history_container = QWidget()
+        self.history_layout = QVBoxLayout(self.history_container)
+        self.history_title_input = QLineEdit()
+        self.history_title_input.setPlaceholderText("Title")
+        self.history_layout.addWidget(self.history_title_input)
+        self.history_text = QTextEdit()
+        self.history_text.setPlaceholderText("Page text will appear here...")
+        self.history_layout.addWidget(self.history_text)
+        history_btn_layout = QHBoxLayout()
+        history_save_btn = QPushButton("Save")
+        history_save_btn.clicked.connect(self.save_history)
+        history_btn_layout.addWidget(history_save_btn)
+        history_refresh_btn = QPushButton("Refresh")
+        history_refresh_btn.clicked.connect(self.refresh_history_tree)
+        history_btn_layout.addWidget(history_refresh_btn)
+        self.history_layout.addLayout(history_btn_layout)
+
+        self.history_container.hide()
+        sidebar_layout.addWidget(self.history_container)
 
         # RSS Reader Section
         rss_label = QLabel("RSS Reader")
@@ -359,17 +412,219 @@ class MainWindow(QMainWindow):
             return widget.browser
         return None
 
-    def sidebar_item_clicked(self, item):
-        if item.text() == "Feeds":
-            self.feed_page = 0
-            self.bookmarks_container.hide()
-            self.show_feeds()
-        elif item.text() == "Bookmarks":
-            self.feeds_container.hide()
-            self.show_bookmarks()
-        else:
-            self.feeds_container.hide()
-            self.bookmarks_container.hide()
+    def _is_descendant_of(self, item, ancestor):
+        """Check if item is a descendant of ancestor in the tree."""
+        current = item.parent()
+        while current is not None:
+            if current == ancestor:
+                return True
+            current = current.parent()
+        return False
+
+    def sidebar_tree_item_clicked(self, item, column):
+        """Handle clicks on tree items."""
+        parent = item.parent()
+
+        if parent is None:
+            # Top-level item clicked
+            text = item.text(0)
+            if text == "Feeds":
+                self.feed_page = 0
+                self.bookmarks_btn_container.hide()
+                self.history_container.hide()
+                self.show_feeds()
+            elif text == "Bookmarks":
+                self.feeds_container.hide()
+                self.history_container.hide()
+                self.bookmarks_btn_container.show()
+                # Toggle expand/collapse
+                if item.isExpanded():
+                    self.sidebar_tree.collapseItem(item)
+                else:
+                    self.sidebar_tree.expandItem(item)
+            elif text == "History":
+                self.feeds_container.hide()
+                self.bookmarks_btn_container.hide()
+                self.history_container.show()
+                # Load selected text from browser
+                browser = self.current_browser()
+                if browser:
+                    browser.page().runJavaScript(
+                        "window.getSelection().toString();",
+                        self._on_history_text_ready
+                    )
+                # Toggle expand/collapse
+                if item.isExpanded():
+                    self.sidebar_tree.collapseItem(item)
+                else:
+                    self.sidebar_tree.expandItem(item)
+            else:
+                self.feeds_container.hide()
+                self.bookmarks_btn_container.hide()
+                self.history_container.hide()
+        elif self._is_descendant_of(item, self.bookmarks_tree_item):
+            # Bookmark item or subfolder clicked
+            role = item.data(0, Qt.UserRole)
+            if role == "__folder__":
+                # Subfolder - toggle expand/collapse
+                if item.isExpanded():
+                    self.sidebar_tree.collapseItem(item)
+                else:
+                    self.sidebar_tree.expandItem(item)
+            elif role:
+                # Bookmark child clicked - navigate to URL
+                title = item.text(0)
+                self.add_new_tab(QUrl(role), title)
+        elif self._is_descendant_of(item, self.history_tree_item):
+            # History item or subfolder clicked
+            role = item.data(0, Qt.UserRole)
+            if role == "__folder__":
+                # Subfolder - toggle expand/collapse
+                if item.isExpanded():
+                    self.sidebar_tree.collapseItem(item)
+                else:
+                    self.sidebar_tree.expandItem(item)
+            elif role:
+                # History child clicked - load file content
+                self.history_file_clicked_by_name(role)
+
+    def sidebar_tree_item_expanded(self, item):
+        """Handle tree item expansion."""
+        text = item.text(0)
+        if text == "Bookmarks":
+            self.bookmarks_btn_container.show()
+        elif text == "History":
+            self.history_container.show()
+
+    def populate_bookmarks_tree(self):
+        """Populate the Bookmarks tree folder with items from data/bookmarks.txt.
+        
+        File format supports subfolders:
+            [FolderName]        - defines a subfolder
+            Title|URL           - bookmark item (under current folder or root)
+        """
+        # Remove existing children
+        self.bookmarks_tree_item.takeChildren()
+
+        bookmarks_file = os.path.join(self.data_dir, "bookmarks.txt")
+        if not os.path.isfile(bookmarks_file):
+            # Create default bookmarks file
+            os.makedirs(self.data_dir, exist_ok=True)
+            with open(bookmarks_file, 'w', encoding='utf-8') as f:
+                f.write("OpenSpeedTest.Ru|https://openspeedtest.ru\n")
+
+        try:
+            current_folder = None
+            with open(bookmarks_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Subfolder header
+                    if line.startswith('[') and line.endswith(']'):
+                        folder_name = line[1:-1].strip()
+                        if folder_name:
+                            current_folder = QTreeWidgetItem(self.bookmarks_tree_item, [folder_name])
+                            current_folder.setData(0, Qt.UserRole, "__folder__")
+                            current_folder.setFlags(current_folder.flags() | Qt.ItemIsEnabled)
+                        continue
+                    # End of folder block
+                    if line == '[]':
+                        current_folder = None
+                        continue
+                    # Bookmark entry
+                    if '|' in line:
+                        title, url = line.split('|', 1)
+                    else:
+                        title = line
+                        url = line
+                    parent = current_folder if current_folder else self.bookmarks_tree_item
+                    child = QTreeWidgetItem(parent, [title.strip()])
+                    child.setData(0, Qt.UserRole, url.strip())
+                    child.setToolTip(0, url.strip())
+        except Exception as e:
+            print(f"Error loading bookmarks: {e}")
+
+    def populate_history_tree(self):
+        """Populate the History tree folder with .txt files from data/history/ and its subdirectories."""
+        self.history_tree_item.takeChildren()
+
+        history_dir = os.path.join(self.data_dir, "history")
+        if not os.path.isdir(history_dir):
+            return
+
+        # Add subdirectories as subfolders
+        entries = sorted(os.listdir(history_dir))
+        subdirs = [d for d in entries if os.path.isdir(os.path.join(history_dir, d))]
+        for subdir in subdirs:
+            folder_item = QTreeWidgetItem(self.history_tree_item, [subdir])
+            folder_item.setData(0, Qt.UserRole, "__folder__")
+            folder_item.setFlags(folder_item.flags() | Qt.ItemIsEnabled)
+            subdir_path = os.path.join(history_dir, subdir)
+            sub_files = sorted(
+                [f for f in os.listdir(subdir_path) if f.endswith(".txt")],
+                reverse=True
+            )
+            for fname in sub_files:
+                display_name = os.path.splitext(fname)[0]
+                child = QTreeWidgetItem(folder_item, [display_name])
+                child.setData(0, Qt.UserRole, os.path.join(subdir, fname))
+                child.setToolTip(0, fname)
+
+        # Add root-level files
+        all_files = sorted(
+            [f for f in entries if f.endswith(".txt") and os.path.isfile(os.path.join(history_dir, f))],
+            reverse=True
+        )
+
+        for fname in all_files:
+            display_name = os.path.splitext(fname)[0]
+            child = QTreeWidgetItem(self.history_tree_item, [display_name])
+            child.setData(0, Qt.UserRole, fname)
+            child.setToolTip(0, fname)
+
+    def refresh_history_tree(self):
+        """Refresh the history tree items."""
+        self.populate_history_tree()
+        self.status_bar.showMessage("History list refreshed.")
+
+    def remove_selected_bookmark(self):
+        """Remove the currently selected bookmark from the tree and file."""
+        selected = self.sidebar_tree.currentItem()
+        if not selected:
+            return
+        # Check if it's a direct child of bookmarks or a child of a bookmark subfolder
+        if self._is_descendant_of(selected, self.bookmarks_tree_item):
+            role = selected.data(0, Qt.UserRole)
+            if role == "__folder__":
+                # Remove entire subfolder
+                parent = selected.parent()
+                idx = parent.indexOfChild(selected)
+                if idx >= 0:
+                    parent.takeChild(idx)
+                    self.save_bookmarks_from_tree()
+                    self.status_bar.showMessage(f"Bookmark folder '{selected.text(0)}' removed.")
+            else:
+                # Remove individual bookmark
+                parent = selected.parent()
+                idx = parent.indexOfChild(selected)
+                if idx >= 0:
+                    parent.takeChild(idx)
+                    self.save_bookmarks_from_tree()
+                    self.status_bar.showMessage("Bookmark removed.")
+
+    def history_file_clicked_by_name(self, fname):
+        """Load the content of a history file into the text area."""
+        file_path = os.path.join(self.data_dir, "history", fname)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            self.history_text.setPlainText(content)
+            self.history_title_input.setText(os.path.splitext(fname)[0])
+            self.history_container.show()
+            self.status_bar.showMessage(f"Loaded {fname}")
+        except Exception as e:
+            self.status_bar.showMessage(f"Error reading {fname}: {e}")
 
     def show_feeds(self):
         self.feeds_list.clear()
@@ -515,62 +770,267 @@ class MainWindow(QMainWindow):
             writer.writeheader()
             writer.writerows(rows)
 
-    def load_bookmarks(self):
-        file_path = "data/bookmarks.csv"
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    def save_bookmarks_from_tree(self):
+        """Save all bookmarks from the tree widget to data/bookmarks.txt.
         
-        if not os.path.isfile(file_path):
-            with open(file_path, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=["title", "url"], delimiter='\t')
-                writer.writeheader()
-                writer.writerow({"title": "OpenSpeedTest.Ru", "url": "https://openspeedtest.ru"})
-        
-        bookmarks = []
-        with open(file_path, mode='r', newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f, delimiter='\t')
-            for row in reader:
-                bookmarks.append(row)
-        return bookmarks
+        Supports subfolders using [FolderName] / [] block format.
+        """
+        bookmarks_file = os.path.join(self.data_dir, "bookmarks.txt")
+        os.makedirs(self.data_dir, exist_ok=True)
+        try:
+            with open(bookmarks_file, 'w', encoding='utf-8') as f:
+                for i in range(self.bookmarks_tree_item.childCount()):
+                    child = self.bookmarks_tree_item.child(i)
+                    role = child.data(0, Qt.UserRole)
+                    if role == "__folder__":
+                        # Write subfolder header
+                        f.write(f"[{child.text(0)}]\n")
+                        # Write children of this subfolder
+                        for j in range(child.childCount()):
+                            sub_child = child.child(j)
+                            title = sub_child.text(0)
+                            url = sub_child.data(0, Qt.UserRole) or ""
+                            f.write(f"{title}|{url}\n")
+                        f.write("[]\n")
+                    else:
+                        title = child.text(0)
+                        url = role or ""
+                        f.write(f"{title}|{url}\n")
+        except Exception as e:
+            print(f"Error saving bookmarks: {e}")
 
-    def save_bookmarks(self, bookmarks):
-        file_path = "data/bookmarks.csv"
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=["title", "url"], delimiter='\t')
-            writer.writeheader()
-            writer.writerows(bookmarks)
-
-    def show_bookmarks(self):
-        self.bookmarks_list.clear()
-        bookmarks = self.load_bookmarks()
-        for bm in bookmarks:
-            self.bookmarks_list.addItem(f"{bm['title']} — {bm['url']}")
-        self.bookmarks_container.show()
-
-    def bookmark_item_clicked(self, item):
-        text = item.text()
-        if " — " in text:
-            url = text.split(" — ", 1)[1]
-        else:
-            url = text
-        self.add_new_tab(QUrl(url), text.split(" — ")[0] if " — " in text else "Bookmark")
+    def _check_bookmark_duplicate(self, parent_item, url):
+        """Recursively check for duplicate bookmark URL under parent_item."""
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            role = child.data(0, Qt.UserRole)
+            if role == "__folder__":
+                if self._check_bookmark_duplicate(child, url):
+                    return True
+            elif role == url:
+                return True
+        return False
 
     def add_current_page_bookmark(self):
+        """Add the current page as a bookmark to the tree and file.
+        
+        If a bookmark subfolder is currently selected, the bookmark is added there.
+        """
         browser = self.current_browser()
         if not browser:
             return
-        
+
         url = browser.url().toString()
         title = browser.page().title() or url
-        bookmarks = self.load_bookmarks()
+
+        # Check for duplicates across all bookmarks (including subfolders)
+        if self._check_bookmark_duplicate(self.bookmarks_tree_item, url):
+            self.status_bar.showMessage("Bookmark already exists.")
+            return
+
+        # Determine target parent: selected subfolder or root bookmarks
+        target = self.bookmarks_tree_item
+        selected = self.sidebar_tree.currentItem()
+        if selected and self._is_descendant_of(selected, self.bookmarks_tree_item):
+            if selected.data(0, Qt.UserRole) == "__folder__":
+                target = selected
+            elif selected.parent() and selected.parent().data(0, Qt.UserRole) == "__folder__":
+                target = selected.parent()
+
+        # Add to tree
+        child = QTreeWidgetItem(target, [title])
+        child.setData(0, Qt.UserRole, url)
+        child.setToolTip(0, url)
+
+        # Save to file
+        self.save_bookmarks_from_tree()
+        self.sidebar_tree.expandItem(self.bookmarks_tree_item)
+        if target != self.bookmarks_tree_item:
+            self.sidebar_tree.expandItem(target)
+        self.status_bar.showMessage(f"Bookmarked: {title}")
+
+    def _on_history_text_ready(self, text):
+        """Callback when selected text is extracted from the browser."""
+        if text:
+            self.history_text.setPlainText(text)
+
+    def save_history(self):
+        """Save the history text to data/history/{title}.txt.
         
-        for bm in bookmarks:
-            if bm['url'] == url:
+        If a history subfolder is selected, saves into that subfolder.
+        """
+        title = self.history_title_input.text().strip()
+        if not title:
+            self.status_bar.showMessage("Please enter a title for the history entry.")
+            return
+
+        # Sanitize filename
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+        if not safe_title:
+            self.status_bar.showMessage("Invalid title. Use alphanumeric characters.")
+            return
+
+        # Determine target directory: selected subfolder or root history
+        history_dir = os.path.join(self.data_dir, "history")
+        target_dir = history_dir
+        selected = self.sidebar_tree.currentItem()
+        if selected and self._is_descendant_of(selected, self.history_tree_item):
+            role = selected.data(0, Qt.UserRole)
+            if role == "__folder__":
+                target_dir = os.path.join(history_dir, selected.text(0))
+            elif selected.parent() and selected.parent().data(0, Qt.UserRole) == "__folder__":
+                target_dir = os.path.join(history_dir, selected.parent().text(0))
+
+        os.makedirs(target_dir, exist_ok=True)
+
+        file_path = os.path.join(target_dir, f"{safe_title}.txt")
+        content = self.history_text.toPlainText()
+
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            self.status_bar.showMessage(f"Saved to {file_path}")
+            self.populate_history_tree()
+        except Exception as e:
+            self.status_bar.showMessage(f"Error saving history: {e}")
+
+    # ---- Context Menu for Sidebar Tree ----
+
+    def sidebar_context_menu(self, position):
+        """Show context menu for sidebar tree items (right-click)."""
+        item = self.sidebar_tree.itemAt(position)
+        if not item:
+            return
+
+        menu = QMenu(self)
+
+        # Context menu for Bookmarks top-level
+        if item == self.bookmarks_tree_item:
+            add_folder_action = menu.addAction("Add Subfolder")
+            add_folder_action.triggered.connect(lambda: self._add_bookmark_subfolder(self.bookmarks_tree_item))
+            menu.exec(self.sidebar_tree.viewport().mapToGlobal(position))
+            return
+
+        # Context menu for History top-level
+        if item == self.history_tree_item:
+            add_folder_action = menu.addAction("Add Subfolder")
+            add_folder_action.triggered.connect(self._add_history_subfolder)
+            menu.exec(self.sidebar_tree.viewport().mapToGlobal(position))
+            return
+
+        # Context menu for bookmark subfolders
+        if self._is_descendant_of(item, self.bookmarks_tree_item) and item.data(0, Qt.UserRole) == "__folder__":
+            rename_action = menu.addAction("Rename Subfolder")
+            rename_action.triggered.connect(lambda: self._rename_bookmark_subfolder(item))
+            remove_action = menu.addAction("Remove Subfolder")
+            remove_action.triggered.connect(lambda: self._remove_bookmark_subfolder(item))
+            menu.exec(self.sidebar_tree.viewport().mapToGlobal(position))
+            return
+
+        # Context menu for history subfolders
+        if self._is_descendant_of(item, self.history_tree_item) and item.data(0, Qt.UserRole) == "__folder__":
+            rename_action = menu.addAction("Rename Subfolder")
+            rename_action.triggered.connect(lambda: self._rename_history_subfolder(item))
+            remove_action = menu.addAction("Remove Subfolder")
+            remove_action.triggered.connect(lambda: self._remove_history_subfolder(item))
+            menu.exec(self.sidebar_tree.viewport().mapToGlobal(position))
+            return
+
+    # ---- Bookmark Subfolder Management ----
+
+    def _add_bookmark_subfolder(self, parent_item):
+        """Add a new subfolder under the given bookmark parent item."""
+        name, ok = QInputDialog.getText(self, "New Bookmark Subfolder", "Subfolder name:")
+        if ok and name.strip():
+            name = name.strip()
+            folder = QTreeWidgetItem(parent_item, [name])
+            folder.setData(0, Qt.UserRole, "__folder__")
+            folder.setFlags(folder.flags() | Qt.ItemIsEnabled)
+            self.sidebar_tree.expandItem(parent_item)
+            self.save_bookmarks_from_tree()
+            self.status_bar.showMessage(f"Bookmark subfolder '{name}' added.")
+
+    def _rename_bookmark_subfolder(self, item):
+        """Rename a bookmark subfolder."""
+        old_name = item.text(0)
+        new_name, ok = QInputDialog.getText(self, "Rename Bookmark Subfolder", "New name:", text=old_name)
+        if ok and new_name.strip():
+            item.setText(0, new_name.strip())
+            self.save_bookmarks_from_tree()
+            self.status_bar.showMessage(f"Bookmark subfolder renamed to '{new_name.strip()}'.")
+
+    def _remove_bookmark_subfolder(self, item):
+        """Remove a bookmark subfolder and all its contents."""
+        name = item.text(0)
+        reply = QMessageBox.question(
+            self, "Remove Bookmark Subfolder",
+            f"Remove subfolder '{name}' and all its bookmarks?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            parent = item.parent()
+            idx = parent.indexOfChild(item)
+            if idx >= 0:
+                parent.takeChild(idx)
+                self.save_bookmarks_from_tree()
+                self.status_bar.showMessage(f"Bookmark subfolder '{name}' removed.")
+
+    # ---- History Subfolder Management ----
+
+    def _add_history_subfolder(self):
+        """Add a new subfolder (subdirectory) under data/history/."""
+        name, ok = QInputDialog.getText(self, "New History Subfolder", "Subfolder name:")
+        if ok and name.strip():
+            safe_name = "".join(c for c in name.strip() if c.isalnum() or c in (' ', '-', '_')).strip()
+            if not safe_name:
+                self.status_bar.showMessage("Invalid folder name.")
                 return
-        
-        bookmarks.append({"title": title, "url": url})
-        self.save_bookmarks(bookmarks)
-        self.show_bookmarks()
+            folder_path = os.path.join(self.data_dir, "history", safe_name)
+            try:
+                os.makedirs(folder_path, exist_ok=True)
+                self.populate_history_tree()
+                self.sidebar_tree.expandItem(self.history_tree_item)
+                self.status_bar.showMessage(f"History subfolder '{safe_name}' created.")
+            except Exception as e:
+                self.status_bar.showMessage(f"Error creating folder: {e}")
+
+    def _rename_history_subfolder(self, item):
+        """Rename a history subfolder (subdirectory)."""
+        old_name = item.text(0)
+        new_name, ok = QInputDialog.getText(self, "Rename History Subfolder", "New name:", text=old_name)
+        if ok and new_name.strip():
+            safe_name = "".join(c for c in new_name.strip() if c.isalnum() or c in (' ', '-', '_')).strip()
+            if not safe_name:
+                self.status_bar.showMessage("Invalid folder name.")
+                return
+            old_path = os.path.join(self.data_dir, "history", old_name)
+            new_path = os.path.join(self.data_dir, "history", safe_name)
+            if os.path.exists(new_path):
+                self.status_bar.showMessage(f"Folder '{safe_name}' already exists.")
+                return
+            try:
+                os.rename(old_path, new_path)
+                self.populate_history_tree()
+                self.status_bar.showMessage(f"History subfolder renamed to '{safe_name}'.")
+            except Exception as e:
+                self.status_bar.showMessage(f"Error renaming folder: {e}")
+
+    def _remove_history_subfolder(self, item):
+        """Remove a history subfolder (subdirectory) and all its files."""
+        name = item.text(0)
+        reply = QMessageBox.question(
+            self, "Remove History Subfolder",
+            f"Remove subfolder '{name}' and all its files?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            folder_path = os.path.join(self.data_dir, "history", name)
+            try:
+                shutil.rmtree(folder_path)
+                self.populate_history_tree()
+                self.status_bar.showMessage(f"History subfolder '{name}' removed.")
+            except Exception as e:
+                self.status_bar.showMessage(f"Error removing folder: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
