@@ -4,4 +4,5 @@ NeuroLit - Neuronet Literature / Нейролит - Нейросетевая Л�
 
 ### ChangeLog
 
-20260208 Initial Commit
+20260208 Initial Commit  
+20260209 Add Linux and Windows target
