@@ -1,3 +1,4 @@
+cd /d "%~dp0"
 @echo off
 if not exist "data\feeds" mkdir "data\feeds"
 
